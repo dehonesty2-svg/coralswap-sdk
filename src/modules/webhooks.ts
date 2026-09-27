@@ -1,5 +1,10 @@
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 
+import { rpc } from '@stellar/stellar-sdk';
+
+import { EventCursor } from '@/utils/event-cursor';
+import { EventParser } from '@/utils/events';
+import type { CoralSwapEvent } from '@/types/events';
 import {
   WebhookConfig,
   WebhookDelivery,
@@ -932,6 +937,53 @@ export class WebhookModule {
         threshold: WEBHOOK_DISABLE_FAILURE_THRESHOLD,
       });
     }
+  }
+
+  /**
+   * Poll a Soroban RPC server for CoralSwap contract events and return them as
+   * typed {@link CoralSwapEvent}s.
+   *
+   * Uses the shared {@link EventCursor} for cursor-anchored, paginated
+   * `getEvents` calls (with base64-XDR topic encoding) and the shared
+   * {@link EventParser} for decoding — so event classification is consistent
+   * with every other module and the raw-string topic bug is avoided.
+   *
+   * @param server - Soroban RPC server to poll.
+   * @param options - Optional filter / pagination overrides.
+   * @param options.contractIds - Restrict events to these contract addresses.
+   * @param options.topics - Topic symbol filters (e.g. `["swap", "sync"]`).
+   * @param options.fromLedger - Explicit start ledger; defaults to cursor anchor.
+   * @param options.toLedger - Explicit end ledger; defaults to chain head.
+   * @param options.limit - Per-request page size.
+   * @returns Decoded, typed events — unrecognised entries are dropped.
+   */
+  async pollEvents(
+    server: rpc.Server,
+    options: {
+      contractIds?: string[];
+      topics?: string[];
+      fromLedger?: number;
+      toLedger?: number;
+      limit?: number;
+    } = {},
+  ): Promise<CoralSwapEvent[]> {
+    const cursor = new EventCursor(server);
+    const parser = new EventParser(options.contractIds ?? []);
+
+    const raw = await cursor.scan({
+      contractIds: options.contractIds,
+      topics: options.topics,
+      fromLedger: options.fromLedger,
+      toLedger: options.toLedger,
+      limit: options.limit,
+    });
+
+    const decoded: CoralSwapEvent[] = [];
+    for (const event of raw) {
+      const typed = parser.fromEventResponse(event);
+      if (typed) decoded.push(typed);
+    }
+    return decoded;
   }
 }
 
